@@ -35,6 +35,14 @@ def call(Map config = [:]) {
     def autoTag = config.autoTag != null ? config.autoTag : true
     def skipUtTest = config.skipUtTest != null ? config.skipUtTest : false
     def skipSitTest = config.skipSitTest != null ? config.skipSitTest : false
+    def dependencyRepoUrl = config.dependencyRepoUrl ?: 'git@github.com:zaqbest/platform-release.git'
+    def dependencyBranch = config.dependencyBranch ?: 'master'
+    def dependencyVersionsFile = 'platform-dependencies/gradle.properties'
+    def dependencyComponents = [
+        'platform-database', 'platform-monitoring', 'platform-common',
+        'platform-config', 'platform-build', 'platform-security',
+        'platform-event', 'platform-cache', 'platform-apicore'
+    ]
 
     pipeline {
         agent any
@@ -124,11 +132,53 @@ def call(Map config = [:]) {
                     }
                 }
             }
+
+            stage('更新组件依赖版本') {
+                steps {
+                    script {
+                        def component = sh(script: 'basename "$(git remote get-url origin)" .git', returnStdout: true).trim()
+                        if (!dependencyComponents.contains(component)) {
+                            echo "${component} 不在依赖版本清单中，跳过更新。"
+                        } else {
+                            def propertyName = "${component}-dependencies.version"
+                            // 每次重试都重新检出最新分支，避免并行发布造成非快进推送。
+                            retry(3) {
+                                dir('dependency-version-update') {
+                                    deleteDir()
+                                    checkout([$class: 'GitSCM',
+                                        branches: [[name: dependencyBranch]],
+                                        userRemoteConfigs: [[url: dependencyRepoUrl, credentialsId: sshCredentialsId]]
+                                    ])
+
+                                    def contents = readFile(file: dependencyVersionsFile)
+                                    def linePattern = ~/(?m)^${java.util.regex.Pattern.quote(propertyName)}=[^\r\n]*$/
+                                    if (!linePattern.matcher(contents).find()) {
+                                        error "未找到版本属性 ${propertyName}：${dependencyVersionsFile}"
+                                    }
+                                    def updated = contents.replaceFirst(linePattern, "${propertyName}=${env.FULL_VERSION}")
+                                    if (updated != contents) {
+                                        writeFile(file: dependencyVersionsFile, text: updated)
+                                        sh 'git config user.name "Jenkins CI" && git config user.email "jenkins@ci.local"'
+                                        sh "git add -- ${dependencyVersionsFile} && git commit -m 'chore: update ${component} to ${env.FULL_VERSION} [skip ci]'"
+                                        sshagent(credentials: [sshCredentialsId]) {
+                                            withEnv(['GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new']) {
+                                                sh "git push origin HEAD:refs/heads/${dependencyBranch}"
+                                            }
+                                        }
+                                    } else {
+                                        echo "${propertyName} 已经是 ${env.FULL_VERSION}，无需提交。"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         post {
             success {
-                echo "流水线执行成功！版本 [${env.FULL_VERSION}] 已成功发布至 Nexus 并推送 Tag。"
+                echo "流水线执行成功！版本 [${env.FULL_VERSION}] 已发布至 Nexus，符合条件的组件依赖版本已更新。"
             }
             failure {
                 echo '流水线执行失败，请检查日志。'
