@@ -60,7 +60,7 @@ def call(Map config = [:]) {
                 steps {
                     echo '正在执行单元测试...'
                     sh 'chmod +x ./gradlew'
-                    sh "./gradlew ${unitTestTask} ${mavenRepoArgs()}"
+                    sh "./gradlew ${unitTestTask} ${mavenRepoArgs()} --no-daemon"
                 }
             }
 
@@ -70,7 +70,7 @@ def call(Map config = [:]) {
                 }
                 steps {
                     echo '正在执行集成测试...'
-                    sh "./gradlew ${integrationTestTask} ${mavenRepoArgs()}"
+                    sh "./gradlew ${integrationTestTask} ${mavenRepoArgs()} --no-daemon"
                 }
             }
 
