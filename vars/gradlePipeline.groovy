@@ -109,7 +109,9 @@ def call(Map config = [:]) {
                         sh "git tag -a ${tagName} -m 'Automated release by Jenkins build #${env.BUILD_NUMBER}'"
                         
                         sshagent(credentials: ["${sshCredentialsId}"]) {
-                            sh "git push origin ${tagName}"
+                                withEnv(['GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new']) {
+                                    sh "git push origin ${tagName}"
+                                }
                         }
                     }
                 }
