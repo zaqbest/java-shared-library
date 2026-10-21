@@ -19,6 +19,69 @@ def toHttpsUrl(String url) {
     return url
 }
 
+/**
+ * 判断 Git 凭据的类型，同时兼容 Secret text 与 Username with password 两种凭据。
+ * 返回 'string' 或 'usernamePassword'；无法判断时默认按 'string' 处理。
+ */
+def resolveTokenCredentialType(String credentialsId) {
+    def credential = null
+    try {
+        credential = com.cloudbees.plugins.credentials.CredentialsProvider.findCredentialById(
+            credentialsId,
+            com.cloudbees.plugins.credentials.common.StandardCredentials.class,
+            currentBuild)
+    } catch (Throwable t) {
+        echo "无法按构建上下文查找凭据 [${credentialsId}]，将回退到全局查找: ${t.message}"
+    }
+    if (credential == null) {
+        try {
+            def all = com.cloudbees.plugins.credentials.CredentialsProvider.lookupCredentialsInItemGroup(
+                com.cloudbees.plugins.credentials.common.StandardCredentials.class,
+                null, null, null)
+            credential = all.find { it.id == credentialsId }
+        } catch (Throwable t) {
+            echo "查找凭据 [${credentialsId}] 失败: ${t.message}"
+        }
+    }
+    if (credential != null) {
+        // 先判断用户名/密码类型：Username with password 凭据含 username 与 password
+        if (credential.hasProperty('username') && credential.hasProperty('password')) {
+            return 'usernamePassword'
+        }
+        // Secret text 凭据含 secret 字段
+        if (credential.hasProperty('secret')) {
+            return 'string'
+        }
+    }
+    return 'string'
+}
+
+/**
+ * 构造 Git over HTTPS 使用的 Basic 认证头。
+ * GitHub 的 PAT 用作密码，username 可为任意非空值（PAT 场景推荐 x-access-token）。
+ */
+def buildBasicAuthHeader(String user, String token) {
+    return "Basic ${"${user}:${token}".getBytes('UTF-8').encodeBase64().toString()}"
+}
+
+/**
+ * 通过 Personal Access Token 拉取代码。
+ */
+def checkoutWithToken(String httpsUrl, String branch, String authHeader) {
+    checkout([$class: 'GitSCM',
+        branches: [[name: "${branch}"]],
+        userRemoteConfigs: [[
+            url: "${httpsUrl}",
+            // 使用 Authorization 头认证时不能再带 credentialsId，
+            // 否则 Git 会同时发送两套认证信息而被 GitHub 拒绝
+            httpHeaders: [[
+                name: 'Authorization',
+                value: "${authHeader}"
+            ]]
+        ]]
+    ])
+}
+
 def call(Map config = [:]) {
     def branch = config.branch ?: 'main'
     def sshCredentialsId = env.DEFAULT_GIT_SSH_CREDENTIALS_ID ?: 'github-ssh-credential'
@@ -41,20 +104,21 @@ def call(Map config = [:]) {
                     script {
                         if (useTokenAuth) {
                             def httpsUrl = toHttpsUrl(env.GIT_URL)
-                            echo "正在通过 Personal Access Token 从 GitHub 拉取代码 [分支: ${branch}, 地址: ${httpsUrl}]..."
-                            withCredentials([string(credentialsId: "${tokenCredentialsId}", variable: 'GITHUB_TOKEN')]) {
-                                checkout([$class: 'GitSCM',
-                                    branches: [[name: "${branch}"]],
-                                    userRemoteConfigs: [[
-                                        url: "${httpsUrl}",
-                                        // 使用 Authorization 头认证时不能再带 credentialsId，
-                                        // 否则 Git 会同时发送两套认证信息而被 GitHub 拒绝
-                                        httpHeaders: [[
-                                            name: 'Authorization',
-                                            value: "Bearer ${env.GITHUB_TOKEN}"
-                                        ]]
-                                    ]]
-                                ])
+                            def credType = resolveTokenCredentialType(tokenCredentialsId)
+                            echo "正在通过 Personal Access Token 从 GitHub 拉取代码 [分支: ${branch}, 地址: ${httpsUrl}, 凭据类型: ${credType}]..."
+                            if (credType == 'usernamePassword') {
+                                // Username with password 类型的凭据：用户名取自凭据，密码为 PAT
+                                withCredentials([usernamePassword(credentialsId: "${tokenCredentialsId}",
+                                                                   usernameVariable: 'GITHUB_USER',
+                                                                   passwordVariable: 'GITHUB_TOKEN')]) {
+                                    def user = env.GITHUB_USER ?: 'x-access-token'
+                                    checkoutWithToken(httpsUrl, branch, buildBasicAuthHeader(user, env.GITHUB_TOKEN))
+                                }
+                            } else {
+                                // Secret text 类型的凭据：整串即 PAT，用户名固定为 x-access-token
+                                withCredentials([string(credentialsId: "${tokenCredentialsId}", variable: 'GITHUB_TOKEN')]) {
+                                    checkoutWithToken(httpsUrl, branch, buildBasicAuthHeader('x-access-token', env.GITHUB_TOKEN))
+                                }
                             }
                         } else {
                             echo "正在通过 SSH 从 GitHub 拉取代码 [分支: ${branch}]..."
