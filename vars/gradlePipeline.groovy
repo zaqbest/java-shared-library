@@ -103,14 +103,18 @@ def call(Map config = [:]) {
                         echo "当前构建生成的版本号为: ${env.FULL_VERSION}"
 
                         // 4. 执行 Gradle 发布
-                        // 通过 -D 将 Jenkins 后台配的全局环境变量注入为 Java 系统属性，供 Gradle 脚本读取
+                        // 仓库地址直接定义在流水线中；仅账号密码从 Jenkins 全局环境变量读取
+                        def zaqRepoResolveUrl = 'https://nexus.zaqbest.com/repository/maven-public/'
+                        def zaqRepoSnapshotUrl = 'https://nexus.zaqbest.com/repository/maven-snapshots/'
+                        def zaqRepoReleaseUrl = 'https://nexus.zaqbest.com/repository/maven-releases/'
+
                         sh """
                             ./gradlew ${gradlePublishTask} \
                             -PlibVersion=${env.FULL_VERSION} \
                             -Pversion=${env.FULL_VERSION} \
-                            -DzaqRepoResolveUrl=${env.ZAQ_REPO_RESOLVE_URL} \
-                            -DzaqRepoSnapshotUrl=${env.ZAQ_REPO_SNAPSHOT_URL} \
-                            -DzaqRepoReleaseUrl=${env.ZAQ_REPO_RELEASE_URL} \
+                            -DzaqRepoResolveUrl=${zaqRepoResolveUrl} \
+                            -DzaqRepoSnapshotUrl=${zaqRepoSnapshotUrl} \
+                            -DzaqRepoReleaseUrl=${zaqRepoReleaseUrl} \
                             -DzaqRepoUsername=${env.ZAQ_REPO_USERNAME} \
                             -DzaqRepoPassword=${env.ZAQ_REPO_PASSWORD}
                         """
