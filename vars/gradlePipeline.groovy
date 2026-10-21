@@ -1,9 +1,8 @@
 def call(Map config = [:]) {
     def branch = config.branch ?: 'main'
-    // 优先从全局环境变量获取，如果没有配置则直接使用你在截图里创建的凭据 ID
     def sshCredentialsId = env.DEFAULT_GIT_SSH_CREDENTIALS_ID ?: 'github-ssh-credential'
     
-    def baseVersion = config.baseVersion ?: '1.0.0'
+    def baseVersion = config.baseVersion ?: '1.0.0-SNAPSHOT'
     def unitTestTask = config.unitTestTask ?: 'test'
     def integrationTestTask = config.integrationTestTask ?: 'integrationTest'
     def gradlePublishTask = config.gradlePublishTask ?: 'publish'
@@ -44,12 +43,32 @@ def call(Map config = [:]) {
             stage('生成版本号与发布') {
                 steps {
                     script {
+                        // 1. 获取短 Git Commit Hash (前 7 位)
                         def gitCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                        
+                        // 2. 获取当前时间戳 (格式: yyyyMMddHHmmss)
                         def timestamp = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-                        env.FULL_VERSION = "${baseVersion}-${timestamp}-${gitCommit}"
+                        
+                        // 3. 拼装符合你 Gradle 脚本逻辑的动态版本号
+                        env.FULL_VERSION = "${baseVersion.replace('-SNAPSHOT', '')}-${timestamp}-${gitCommit}"
+                        if (baseVersion.endsWith('SNAPSHOT')) {
+                            env.FULL_VERSION = "${baseVersion.replace('-SNAPSHOT', '')}-${timestamp}-${gitCommit}-SNAPSHOT"
+                        }
+                        
                         echo "当前构建生成的版本号为: ${env.FULL_VERSION}"
 
-                        sh "./gradlew ${gradlePublishTask} -Pversion=${env.FULL_VERSION}"
+                        // 4. 执行 Gradle 发布
+                        // 通过 -D 将 Jenkins 后台配的全局环境变量注入为 Java 系统属性，供 Gradle 脚本读取
+                        sh """
+                            ./gradlew ${gradlePublishTask} \
+                            -PlibVersion=${env.FULL_VERSION} \
+                            -Pversion=${env.FULL_VERSION} \
+                            -DzaqRepoResolveUrl=${env.ZAQ_REPO_RESOLVE_URL} \
+                            -DzaqRepoSnapshotUrl=${env.ZAQ_REPO_SNAPSHOT_URL} \
+                            -DzaqRepoReleaseUrl=${env.ZAQ_REPO_RELEASE_URL} \
+                            -DzaqRepoUsername=${env.ZAQ_REPO_USERNAME} \
+                            -DzaqRepoPassword=${env.ZAQ_REPO_PASSWORD}
+                        """
                     }
                 }
             }
@@ -68,7 +87,6 @@ def call(Map config = [:]) {
 
                         sh "git tag -a ${tagName} -m 'Automated release by Jenkins build #${env.BUILD_NUMBER}'"
                         
-                        // 使用对应的 SSH 凭据安全推送 Tag 到 GitHub
                         sshagent(credentials: ["${sshCredentialsId}"]) {
                             sh "git push origin ${tagName}"
                         }
