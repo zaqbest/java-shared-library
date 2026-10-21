@@ -28,7 +28,7 @@ def call(Map config = [:]) {
     def branch = config.branch ?: 'main'
     def sshCredentialsId = env.DEFAULT_GIT_SSH_CREDENTIALS_ID ?: 'github-ssh-credential'
 
-    def baseVersion = config.baseVersion ?: '1.0.0-SNAPSHOT'
+    def baseVersion = config.baseVersion ?: '1.0.0'
     def unitTestTask = config.unitTestTask ?: 'test'
     def integrationTestTask = config.integrationTestTask ?: 'integrationTest'
     def gradlePublishTask = config.gradlePublishTask ?: 'publish'
