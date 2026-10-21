@@ -96,7 +96,7 @@ def call(Map config = [:]) {
                             ./gradlew ${gradlePublishTask} \\
                             -PlibVersion=${env.FULL_VERSION} \\
                             -Pversion=${env.FULL_VERSION} \\
-                            ${mavenRepoArgs()}
+                            ${mavenRepoArgs()} --no-daemon
                         """
                     }
                 }
