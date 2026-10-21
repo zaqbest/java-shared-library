@@ -33,6 +33,8 @@ def call(Map config = [:]) {
     def integrationTestTask = config.integrationTestTask ?: 'integrationTest'
     def gradlePublishTask = config.gradlePublishTask ?: 'publish'
     def autoTag = config.autoTag != null ? config.autoTag : true
+    def skipUtTest = config.skipUtTest != null ? config.skipUtTest : false
+    def skipSitTest = config.skipSitTest != null ? config.skipSitTest : false
 
     pipeline {
         agent any
@@ -52,6 +54,9 @@ def call(Map config = [:]) {
             }
 
             stage('单元测试') {
+                when {
+                    expression { skipUtTest == false }
+                }
                 steps {
                     echo '正在执行单元测试...'
                     sh 'chmod +x ./gradlew'
@@ -60,6 +65,9 @@ def call(Map config = [:]) {
             }
 
             stage('集成测试') {
+                when {
+                    expression { skipSitTest == false }
+                }
                 steps {
                     echo '正在执行集成测试...'
                     sh "./gradlew ${integrationTestTask} ${mavenRepoArgs()}"
