@@ -27,14 +27,32 @@ def mavenRepoArgs() {
 }
 
 /**
- * 构造 gradle 执行脚本。
- * set +x 关闭命令回显，避免仓库账号密码被打印到构建日志中；
- * 命令文本本身也不含明文密码。
+ * 生成用于日志展示的命令行。
+ * 用户名展示实际值，便于排查；密码一律替换为 ****，绝不打印明文。
  */
-def gradleShellScript(String label, String gradleArgs) {
+def displayGradleArgs(String gradleArgs) {
+    def username = env.ZAQ_REPO_USERNAME ?: '****'
+    def shown = gradleArgs.replace('"$ZAQ_REPO_USERNAME"', username)
+    return shown.replaceAll(/-DzaqRepoPassword=("[^"]*"|'[^']*'|\S+)/, '-DzaqRepoPassword=****')
+}
+
+/**
+ * 把字符串安全地包成 shell 单引号参数，避免内容被 shell 二次解析。
+ */
+def shellQuote(String value) {
+    return "'" + value.replace("'", "'\\''") + "'"
+}
+
+/**
+ * 构造 gradle 执行脚本。
+ * set +x 关闭 shell 自带的命令回显(它会打印展开后的明文密码)，
+ * 改为自行输出一份密码已打码的命令，既保留调试能力又不泄漏密码。
+ */
+def gradleShellScript(String label, String gradleArgs, String displayArgs) {
     return [
         'set +x',
-        "echo \"执行 Gradle 任务: ${label}（仓库账号密码已隐藏）\"",
+        "echo ${shellQuote("执行 Gradle 任务: ${label}")}",
+        "echo ${shellQuote("执行命令: ${displayArgs}")}",
         "./gradlew ${gradleArgs}"
     ].join('\n')
 }
@@ -51,10 +69,10 @@ def runGradle(Map config, String label, String gradleArgs) {
         withCredentials([usernamePassword(credentialsId: credentialsId,
                 usernameVariable: 'ZAQ_REPO_USERNAME',
                 passwordVariable: 'ZAQ_REPO_PASSWORD')]) {
-            sh gradleShellScript(label, gradleArgs)
+            sh gradleShellScript(label, gradleArgs, displayGradleArgs(gradleArgs))
         }
     } else {
-        sh gradleShellScript(label, gradleArgs)
+        sh gradleShellScript(label, gradleArgs, displayGradleArgs(gradleArgs))
     }
 }
 
