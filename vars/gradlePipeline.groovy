@@ -24,11 +24,78 @@ def mavenRepoArgs() {
     ].join(' ')
 }
 
+/**
+ * 解析本次构建的分支。
+ * 优先级：config.branch > Jenkins 环境变量(BRANCH_NAME / GIT_BRANCH) > config.defaultBranch
+ * 多分支(PR)构建会把 PR 引用回退为源分支。
+ */
+def resolveBranch(Map config = [:]) {
+    if (config.branch) {
+        return config.branch
+    }
+
+    def branch = env.BRANCH_NAME ?: env.GIT_BRANCH
+    if (!branch) {
+        def fallback = config.defaultBranch ?: 'main'
+        echo "未能从 Jenkins 环境变量中获取分支，回退到 ${fallback}。"
+        return fallback
+    }
+
+    branch = branch.trim().replaceFirst('^origin/', '').replaceFirst('^remotes/', '')
+
+    // 多分支 PR 构建：检出的是 PR 引用，回退到源分支
+    if (branch.startsWith('PR-')) {
+        def source = env.CHANGE_BRANCH ?: env.CHANGE_TARGET
+        if (source) {
+            branch = source.trim().replaceFirst('^origin/', '').replaceFirst('^remotes/', '')
+        }
+    }
+
+    return branch
+}
+
+/**
+ * 从项目的 gradle.properties 中读取版本号属性(如 libVersion)。
+ * 读取顺序：config 显式指定 > 仓库 gradle.properties > 默认值。
+ * 必须在 checkout 之后调用（依赖工作区已存在该文件）。
+ */
+def resolveBaseVersion(String fallback, String propertyKey = 'libVersion', String propertiesFile = 'gradle.properties') {
+    try {
+        if (fileExists(propertiesFile)) {
+            def contents = readFile(file: propertiesFile)
+            // 匹配 key=value，忽略行首空白、忽略 # 注释行，value 去除首尾空白
+            def matcher = contents =~ /(?m)^\s*${java.util.regex.Pattern.quote(propertyKey)}\s*=\s*(.*)$/
+            if (matcher.find()) {
+                def value = matcher.group(1).trim()
+                if (value) {
+                    echo "从 ${propertiesFile} 读取到 ${propertyKey}=${value}"
+                    return value
+                }
+            }
+            echo "${propertiesFile} 中未找到非空的 ${propertyKey}，回退到 ${fallback}。"
+        } else {
+            echo "未找到 ${propertiesFile}，回退到 ${fallback}。"
+        }
+    } catch (Exception e) {
+        echo "读取 ${propertiesFile} 失败(${e.message})，回退到 ${fallback}。"
+    }
+    return fallback
+}
+
 def call(Map config = [:]) {
-    def branch = config.branch ?: 'main'
+    def branch = resolveBranch(config)
+    // 只有主分支(main/master)才打 Tag 并推进 platform-release 的依赖版本
+    def releaseBranches = config.releaseBranches ?: ['main', 'master']
+    def isReleaseBranch = releaseBranches.contains(branch)
+    echo "本次构建分支: ${branch}，是否为发布分支: ${isReleaseBranch}"
+
     def sshCredentialsId = env.DEFAULT_GIT_SSH_CREDENTIALS_ID ?: 'github-ssh-credential'
 
-    def baseVersion = config.baseVersion ?: '1.0.0'
+    // baseVersion 的最终取值在「生成版本号与发布」阶段从 gradle.properties 解析，
+    // 这里仅保留 config 传入值与默认值作为回退。
+    def configuredBaseVersion = config.baseVersion
+    def baseVersionPropertyKey = config.baseVersionPropertyKey ?: 'libVersion'
+    def baseVersionPropertiesFile = config.baseVersionPropertiesFile ?: 'gradle.properties'
     def unitTestTask = config.unitTestTask ?: 'test'
     def integrationTestTask = config.integrationTestTask ?: 'integrationTest'
     def gradlePublishTask = config.gradlePublishTask ?: 'publish'
@@ -58,6 +125,9 @@ def call(Map config = [:]) {
                             credentialsId: "${sshCredentialsId}"
                         ]]
                     ])
+
+                    def actualBranch = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+                    echo "实际检出分支: ${actualBranch}（期望: ${branch}）"
                 }
             }
 
@@ -91,15 +161,28 @@ def call(Map config = [:]) {
                         // 2. 获取当前时间戳 (格式: yyyyMMddHHmmss)
                         def timestamp = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
                         
-                        // 3. 拼装符合你 Gradle 脚本逻辑的动态版本号
-                        env.FULL_VERSION = "${baseVersion.replace('-SNAPSHOT', '')}-${timestamp}-${gitCommit}"
-                        if (baseVersion.endsWith('SNAPSHOT')) {
-                            env.FULL_VERSION = "${baseVersion.replace('-SNAPSHOT', '')}-${timestamp}-${gitCommit}-SNAPSHOT"
-                        }
-                        
+                        // 3. 解析基础版本号
+                        //    优先级：config.baseVersion 显式指定 > gradle.properties 的 libVersion > 默认 1.0.0
+                        def baseVersion = resolveBaseVersion(
+                            configuredBaseVersion ?: '1.0.0',
+                            baseVersionPropertyKey,
+                            baseVersionPropertiesFile
+                        )
+
+                        // 4. 拼装符合你 Gradle 脚本逻辑的动态版本号
+                        //    发布分支(main/master)：正式版本号
+                        //    其它分支：一律追加 -SNAPSHOT 后缀，产物为快照版本
+                        def baseVersionClean = baseVersion.replaceFirst(/-?SNAPSHOT$/, '')
+                        def versionCore = "${baseVersionClean}-${timestamp}-${gitCommit}"
+                        // 非发布分支强制快照；发布分支沿用 baseVersion 的显式配置
+                        def useSnapshot = !isReleaseBranch || baseVersion.endsWith('SNAPSHOT')
+                        env.FULL_VERSION = useSnapshot ? "${versionCore}-SNAPSHOT" : versionCore
+
+                        echo "当前构建分支: ${branch}（发布分支: ${isReleaseBranch}）"
+                        echo "基础版本号: ${baseVersion}"
                         echo "当前构建生成的版本号为: ${env.FULL_VERSION}"
 
-                        // 4. 执行 Gradle 发布
+                        // 5. 执行 Gradle 发布
                         sh """
                             ./gradlew ${gradlePublishTask} \\
                             -PlibVersion=${env.FULL_VERSION} \\
@@ -112,7 +195,7 @@ def call(Map config = [:]) {
 
             stage('Git 打 Tag 并推送') {
                 when {
-                    expression { autoTag == true }
+                    expression { autoTag == true && isReleaseBranch }
                 }
                 steps {
                     script {
@@ -134,6 +217,9 @@ def call(Map config = [:]) {
             }
 
             stage('更新组件依赖版本') {
+                when {
+                    expression { isReleaseBranch }
+                }
                 steps {
                     script {
                         def component = sh(script: 'basename "$(git remote get-url origin)" .git', returnStdout: true).trim()
