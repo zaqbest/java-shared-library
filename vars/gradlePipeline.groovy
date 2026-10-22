@@ -126,8 +126,10 @@ def call(Map config = [:]) {
                         ]]
                     ])
 
-                    def actualBranch = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
-                    echo "实际检出分支: ${actualBranch}（期望: ${branch}）"
+                    script {
+                        def actualBranch = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+                        echo "实际检出分支: ${actualBranch}（期望: ${branch}）"
+                    }
                 }
             }
 
