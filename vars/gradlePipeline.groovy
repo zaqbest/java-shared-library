@@ -11,7 +11,9 @@ def mavenRepoUrls() {
 
 /**
  * 组装 Gradle 需要的 Maven 仓库参数。
- * 仓库地址来自流水线定义，账号密码取自 Jenkins 全局环境变量。
+ * 仓库地址来自流水线定义。
+ * 账号密码不在此处展开为明文，而是以 shell 变量形式由构建环境在运行时注入，
+ * 这样命令回显(set -x)中不会出现明文密码。
  */
 def mavenRepoArgs() {
     def repos = mavenRepoUrls()
@@ -19,9 +21,41 @@ def mavenRepoArgs() {
         "-DzaqRepoResolveUrl=${repos.resolveUrl}",
         "-DzaqRepoSnapshotUrl=${repos.snapshotUrl}",
         "-DzaqRepoReleaseUrl=${repos.releaseUrl}",
-        "-DzaqRepoUsername=${env.ZAQ_REPO_USERNAME}",
-        "-DzaqRepoPassword=${env.ZAQ_REPO_PASSWORD}"
+        '-DzaqRepoUsername="$ZAQ_REPO_USERNAME"',
+        '-DzaqRepoPassword="$ZAQ_REPO_PASSWORD"'
     ].join(' ')
+}
+
+/**
+ * 构造 gradle 执行脚本。
+ * set +x 关闭命令回显，避免仓库账号密码被打印到构建日志中；
+ * 命令文本本身也不含明文密码。
+ */
+def gradleShellScript(String label, String gradleArgs) {
+    return [
+        'set +x',
+        "echo \"执行 Gradle 任务: ${label}（仓库账号密码已隐藏）\"",
+        "./gradlew ${gradleArgs}"
+    ].join('\n')
+}
+
+/**
+ * 执行 gradle 命令。
+ * 若配置了 nexusCredentialsId，则通过 withCredentials 绑定 Jenkins 凭据，
+ * 由 Jenkins 自动对日志中的敏感值做脱敏；
+ * 否则回退到 Jenkins 全局环境变量 ZAQ_REPO_USERNAME / ZAQ_REPO_PASSWORD。
+ */
+def runGradle(Map config, String label, String gradleArgs) {
+    def credentialsId = config.nexusCredentialsId
+    if (credentialsId) {
+        withCredentials([usernamePassword(credentialsId: credentialsId,
+                usernameVariable: 'ZAQ_REPO_USERNAME',
+                passwordVariable: 'ZAQ_REPO_PASSWORD')]) {
+            sh gradleShellScript(label, gradleArgs)
+        }
+    } else {
+        sh gradleShellScript(label, gradleArgs)
+    }
 }
 
 /**
@@ -140,7 +174,7 @@ def call(Map config = [:]) {
                 steps {
                     echo '正在执行单元测试...'
                     sh 'chmod +x ./gradlew'
-                    sh "./gradlew ${unitTestTask} ${mavenRepoArgs()} --no-daemon"
+                    runGradle(config, "单元测试(${unitTestTask})", "${unitTestTask} ${mavenRepoArgs()} --no-daemon")
                 }
             }
 
@@ -150,7 +184,7 @@ def call(Map config = [:]) {
                 }
                 steps {
                     echo '正在执行集成测试...'
-                    sh "./gradlew ${integrationTestTask} ${mavenRepoArgs()} --no-daemon"
+                    runGradle(config, "集成测试(${integrationTestTask})", "${integrationTestTask} ${mavenRepoArgs()} --no-daemon")
                 }
             }
 
@@ -185,12 +219,8 @@ def call(Map config = [:]) {
                         echo "当前构建生成的版本号为: ${env.FULL_VERSION}"
 
                         // 5. 执行 Gradle 发布
-                        sh """
-                            ./gradlew ${gradlePublishTask} \\
-                            -PlibVersion=${env.FULL_VERSION} \\
-                            -Pversion=${env.FULL_VERSION} \\
-                            ${mavenRepoArgs()} --no-daemon
-                        """
+                        runGradle(config, "发布(${gradlePublishTask})",
+                            "${gradlePublishTask} -PlibVersion=${env.FULL_VERSION} -Pversion=${env.FULL_VERSION} ${mavenRepoArgs()} --no-daemon")
                     }
                 }
             }
