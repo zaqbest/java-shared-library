@@ -166,7 +166,7 @@ def call(Map config = [:]) {
     def dependencyComponents = [
         'platform-database', 'platform-monitoring', 'platform-common',
         'platform-config', 'platform-build', 'platform-security',
-        'platform-event', 'platform-cache', 'platform-apicore'
+        'platform-event', 'platform-cache', 'platform-cache2', 'platform-apicore'
     ]
 
     pipeline {
